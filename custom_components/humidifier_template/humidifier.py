@@ -25,7 +25,7 @@ from homeassistant.components.humidifier import (
     ATTR_CURRENT_HUMIDITY,
     ATTR_HUMIDITY,
     ENTITY_ID_FORMAT,
-    DOMAIN as HUMIDIFIER_DOMAIN
+    DOMAIN as HUMIDIFIER_DOMAIN,
     MODE_AUTO,
     MODE_AWAY,
     MODE_NORMAL,
