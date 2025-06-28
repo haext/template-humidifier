@@ -25,6 +25,7 @@ from homeassistant.components.humidifier import (
     ATTR_CURRENT_HUMIDITY,
     ATTR_HUMIDITY,
     ENTITY_ID_FORMAT,
+    DOMAIN as HUMIDIFIER_DOMAIN
     MODE_AUTO,
     MODE_AWAY,
     MODE_NORMAL,
@@ -414,6 +415,12 @@ class TemplateHumidifier(TemplateEntity, HumidifierEntity, RestoreEntity):
                     SERVICE_TURN_ON,
                     {"entity_id": self._switch_id}
                 )
+            elif "humidifier" in self._switch_id:
+                await self.hass.services.async_call(
+                    HUMIDIFIER_DOMAIN,
+                    SERVICE_TURN_ON,
+                    {"entity_id": self._switch_id}
+                )
             else:
                 await self.hass.services.async_call(
                     SWITCH_DOMAIN,
@@ -429,6 +436,12 @@ class TemplateHumidifier(TemplateEntity, HumidifierEntity, RestoreEntity):
             if "fan" in self._switch_id:
                 await self.hass.services.async_call(
                     FAN_DOMAIN,
+                    SERVICE_TURN_OFF,
+                    {"entity_id": self._switch_id}
+                )
+            elif "humidifier" in self._switch_id:
+                await self.hass.services.async_call(
+                    HUMIDIFIER_DOMAIN,
                     SERVICE_TURN_OFF,
                     {"entity_id": self._switch_id}
                 )
