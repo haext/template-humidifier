@@ -14,6 +14,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.script import Script
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.components.template.const import CONF_AVAILABILITY_TEMPLATE
+from homeassistant.components.template.helpers import async_setup_template_platform
 from homeassistant.components.template.template_entity import TemplateEntity
 from homeassistant.components.fan import (
     DOMAIN as FAN_DOMAIN
