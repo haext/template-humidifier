@@ -49,7 +49,6 @@ from homeassistant.const import (
     CONF_ICON_TEMPLATE,
     CONF_MODEL,
     CONF_NAME,
-    CONF_UNIQUE_ID,
     STATE_UNKNOWN,
     STATE_UNAVAILABLE,
     SERVICE_TURN_ON,
@@ -158,7 +157,6 @@ PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA.extend(
     ): cv.ensure_list,
     vol.Optional(CONF_SET_MODE_ACTION): cv.SCRIPT_SCHEMA,
     vol.Optional(CONF_SET_TARGET_HUMIDITY_ACTION): cv.SCRIPT_SCHEMA,
-    vol.Optional(CONF_UNIQUE_ID): cv.string,
     vol.Optional(CONF_DEVICE): HUMIDIFIER_ENTITY_DEVICE_INFO_SCHEMA,
   }
 )
@@ -171,7 +169,17 @@ async def async_setup_platform(
 ):
   """Set up the humidifier platform."""
 
-  async_add_entities([TemplateHumidifier(hass, config)])
+  await async_setup_reload_service(hass, DOMAIN, [HUMIDIFIER_DOMAIN])
+  await async_setup_template_platform(
+      hass,
+      HUMIDIFIER_DOMAIN,
+      config,
+      TemplateHumidifier,
+      None,
+      async_add_entities,
+      discovery_info,
+      {},
+  )
 
 
 def device_info_from_specifications(
@@ -224,15 +232,6 @@ class TemplateHumidifier(TemplateEntity, HumidifierEntity, RestoreEntity):
         """Initialize the humidifier."""
         super().__init__(hass, config, unique_id)
         self.hass = hass
-        self.entity_id = async_generate_entity_id(
-            ENTITY_ID_FORMAT, config[CONF_NAME], hass=hass
-        )
-        self._config = config
-        self._attr_unique_id = config.get(
-            CONF_UNIQUE_ID,
-            f"template_humidifier_{config[CONF_NAME].lower().replace(" ", "_")}"
-        )
-        self._attr_name = config[CONF_NAME]
         self._attr_min_humidity = config.get(CONF_HUMIDITY_MIN, MIN_HUMIDITY)
         self._attr_max_humidity = config.get(CONF_HUMIDITY_MAX, MAX_HUMIDITY)
         self._state_template = config.get(CONF_STATE_TEMPLATE, None)
