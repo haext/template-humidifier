@@ -220,14 +220,9 @@ def device_info_from_specifications(
 
 class TemplateHumidifier(TemplateEntity, HumidifierEntity, RestoreEntity):
 
-    def __init__(self, hass: HomeAssistant, config: ConfigType):
+    def __init__(self, hass: HomeAssistant, config: ConfigType, unique_id: str | None):
         """Initialize the humidifier."""
-        super().__init__(
-            hass,
-            availability_template=config.get(CONF_AVAILABILITY_TEMPLATE),
-            icon_template=config.get(CONF_ICON_TEMPLATE),
-            entity_picture_template=config.get(CONF_ENTITY_PICTURE_TEMPLATE),
-        )
+        super().__init__(hass, config, unique_id)
         self.hass = hass
         self.entity_id = async_generate_entity_id(
             ENTITY_ID_FORMAT, config[CONF_NAME], hass=hass
