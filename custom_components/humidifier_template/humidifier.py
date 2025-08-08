@@ -233,6 +233,7 @@ class TemplateHumidifier(TemplateEntity, HumidifierEntity, RestoreEntity):
         """Initialize the humidifier."""
         super().__init__(hass, config, unique_id)
         self.hass = hass
+        self._config = config
         self._attr_min_humidity = config.get(CONF_HUMIDITY_MIN, MIN_HUMIDITY)
         self._attr_max_humidity = config.get(CONF_HUMIDITY_MAX, MAX_HUMIDITY)
         self._state_template = config.get(CONF_STATE_TEMPLATE, None)
@@ -249,19 +250,19 @@ class TemplateHumidifier(TemplateEntity, HumidifierEntity, RestoreEntity):
 
         self._state = DEFAULT_SWITCH_STATE == STATE_ON
         self._attr_device_class = HumidifierDeviceClass.DEHUMIDIFIER
-        if self._config[CONF_TYPE] == HUMIDIFIER_TYPE:
+        if config.get(CONF_TYPE) == HUMIDIFIER_TYPE:
             self._attr_device_class = HumidifierDeviceClass.HUMIDIFIER
 
         # To cheack if the switch state change if fired by the platform
         self._self_changed_switch = False
 
         self._target_humidity = DEFAULT_HUMIDITY
-        if self._config[CONF_MODE_LIST]:
+        if config.get(CONF_MODE_LIST):
             self._attr_supported_features = HumidifierEntityFeature.MODES
             self._attr_available_modes = config[CONF_MODE_LIST]
             self._attr_mode = MODE_NORMAL
-        if self._config.get(CONF_DEVICE):
-            self._attr_device_info = device_info_from_specifications(self._config.get(CONF_DEVICE))
+        if config.get(CONF_DEVICE):
+            self._attr_device_info = device_info_from_specifications(config.get(CONF_DEVICE))
 
         self._available = True
 
