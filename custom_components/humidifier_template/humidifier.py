@@ -7,13 +7,14 @@ from typing import Any
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import TemplateError
 import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo
-from homeassistant.helpers.entity import async_generate_entity_id
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo
+from homeassistant.helpers.reload import async_setup_reload_service
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.script import Script
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.components.template.const import CONF_AVAILABILITY_TEMPLATE
+from homeassistant.components.template.helpers import async_setup_template_platform
 from homeassistant.components.template.template_entity import TemplateEntity
 from homeassistant.components.fan import (
     DOMAIN as FAN_DOMAIN
@@ -49,7 +50,6 @@ from homeassistant.const import (
     CONF_ICON_TEMPLATE,
     CONF_MODEL,
     CONF_NAME,
-    CONF_UNIQUE_ID,
     STATE_UNKNOWN,
     STATE_UNAVAILABLE,
     SERVICE_TURN_ON,
@@ -158,7 +158,6 @@ PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA.extend(
     ): cv.ensure_list,
     vol.Optional(CONF_SET_MODE_ACTION): cv.SCRIPT_SCHEMA,
     vol.Optional(CONF_SET_TARGET_HUMIDITY_ACTION): cv.SCRIPT_SCHEMA,
-    vol.Optional(CONF_UNIQUE_ID): cv.string,
     vol.Optional(CONF_DEVICE): HUMIDIFIER_ENTITY_DEVICE_INFO_SCHEMA,
   }
 )
@@ -171,7 +170,17 @@ async def async_setup_platform(
 ):
   """Set up the humidifier platform."""
 
-  async_add_entities([TemplateHumidifier(hass, config)])
+  await async_setup_reload_service(hass, DOMAIN, [HUMIDIFIER_DOMAIN])
+  await async_setup_template_platform(
+      hass,
+      HUMIDIFIER_DOMAIN,
+      config,
+      TemplateHumidifier,
+      None,
+      async_add_entities,
+      discovery_info,
+      {},
+  )
 
 
 def device_info_from_specifications(
@@ -220,24 +229,11 @@ def device_info_from_specifications(
 
 class TemplateHumidifier(TemplateEntity, HumidifierEntity, RestoreEntity):
 
-    def __init__(self, hass: HomeAssistant, config: ConfigType):
+    def __init__(self, hass: HomeAssistant, config: ConfigType, unique_id: str | None):
         """Initialize the humidifier."""
-        super().__init__(
-            hass,
-            availability_template=config.get(CONF_AVAILABILITY_TEMPLATE),
-            icon_template=config.get(CONF_ICON_TEMPLATE),
-            entity_picture_template=config.get(CONF_ENTITY_PICTURE_TEMPLATE),
-        )
+        super().__init__(hass, config, unique_id)
         self.hass = hass
-        self.entity_id = async_generate_entity_id(
-            ENTITY_ID_FORMAT, config[CONF_NAME], hass=hass
-        )
         self._config = config
-        self._attr_unique_id = config.get(
-            CONF_UNIQUE_ID,
-            f"template_humidifier_{config[CONF_NAME].lower().replace(" ", "_")}"
-        )
-        self._attr_name = config[CONF_NAME]
         self._attr_min_humidity = config.get(CONF_HUMIDITY_MIN, MIN_HUMIDITY)
         self._attr_max_humidity = config.get(CONF_HUMIDITY_MAX, MAX_HUMIDITY)
         self._state_template = config.get(CONF_STATE_TEMPLATE, None)
@@ -254,19 +250,19 @@ class TemplateHumidifier(TemplateEntity, HumidifierEntity, RestoreEntity):
 
         self._state = DEFAULT_SWITCH_STATE == STATE_ON
         self._attr_device_class = HumidifierDeviceClass.DEHUMIDIFIER
-        if self._config[CONF_TYPE] == HUMIDIFIER_TYPE:
+        if config.get(CONF_TYPE) == HUMIDIFIER_TYPE:
             self._attr_device_class = HumidifierDeviceClass.HUMIDIFIER
 
-        # To cheack if the switch state change if fired by the platform
+        # To check if the switch state change if fired by the platform
         self._self_changed_switch = False
 
         self._target_humidity = DEFAULT_HUMIDITY
-        if self._config[CONF_MODE_LIST]:
+        if config.get(CONF_MODE_LIST):
             self._attr_supported_features = HumidifierEntityFeature.MODES
             self._attr_available_modes = config[CONF_MODE_LIST]
             self._attr_mode = MODE_NORMAL
-        if self._config.get(CONF_DEVICE):
-            self._attr_device_info = device_info_from_specifications(self._config.get(CONF_DEVICE))
+        if config.get(CONF_DEVICE):
+            self._attr_device_info = device_info_from_specifications(config.get(CONF_DEVICE))
 
         self._available = True
 
@@ -314,7 +310,9 @@ class TemplateHumidifier(TemplateEntity, HumidifierEntity, RestoreEntity):
             ):
                 self._current_humidity = humidity
 
-        # register templates
+    @callback
+    def _async_setup_templates(self) -> None:
+        """Set up templates."""
         if self._state_template:
             self.add_template_attribute(
                 "_state",
