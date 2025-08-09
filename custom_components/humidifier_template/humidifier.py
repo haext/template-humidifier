@@ -253,7 +253,7 @@ class TemplateHumidifier(TemplateEntity, HumidifierEntity, RestoreEntity):
         if config.get(CONF_TYPE) == HUMIDIFIER_TYPE:
             self._attr_device_class = HumidifierDeviceClass.HUMIDIFIER
 
-        # To cheack if the switch state change if fired by the platform
+        # To check if the switch state change if fired by the platform
         self._self_changed_switch = False
 
         self._target_humidity = DEFAULT_HUMIDITY
@@ -310,7 +310,9 @@ class TemplateHumidifier(TemplateEntity, HumidifierEntity, RestoreEntity):
             ):
                 self._current_humidity = humidity
 
-        # register templates
+    @callback
+    def _async_setup_templates(self) -> None:
+        """Set up templates."""
         if self._state_template:
             self.add_template_attribute(
                 "_state",
