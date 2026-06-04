@@ -2,556 +2,286 @@
 import logging
 
 import voluptuous as vol
-from typing import Any
 
+from homeassistant.components.humidifier import (
+    ATTR_HUMIDITY,
+    ATTR_MODE,
+    DOMAIN as HUMIDIFIER_DOMAIN,
+    HumidifierDeviceClass,
+    HumidifierEntity,
+    HumidifierEntityFeature,
+    PLATFORM_SCHEMA,
+)
+from homeassistant.const import (
+    CONF_ENTITY_ID,
+    CONF_NAME,
+    CONF_UNIQUE_ID,
+    STATE_ON,
+    STATE_OFF,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import TemplateError
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo
-from homeassistant.helpers.reload import async_setup_reload_service
-from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.script import Script
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from homeassistant.components.template.const import CONF_AVAILABILITY_TEMPLATE
-from homeassistant.components.template.helpers import async_setup_template_platform
-from homeassistant.components.template.template_entity import TemplateEntity
-from homeassistant.components.fan import (
-    DOMAIN as FAN_DOMAIN
-)
-from homeassistant.components.switch import (
-    DOMAIN as SWITCH_DOMAIN
-)
-from homeassistant.components.humidifier import (
-    ATTR_CURRENT_HUMIDITY,
-    ATTR_HUMIDITY,
-    ENTITY_ID_FORMAT,
-    DOMAIN as HUMIDIFIER_DOMAIN,
-    MODE_AUTO,
-    MODE_AWAY,
-    MODE_NORMAL,
-    HumidifierAction,
-    HumidifierDeviceClass,
-    HumidifierEntityFeature,
-    HumidifierEntity
-)
-from homeassistant.const import (
-    ATTR_CONFIGURATION_URL,
-    ATTR_HW_VERSION,
-    ATTR_MANUFACTURER,
-    ATTR_MODE,
-    ATTR_MODEL,
-    ATTR_NAME,
-    ATTR_SERIAL_NUMBER,
-    ATTR_SUGGESTED_AREA,
-    ATTR_SW_VERSION,
-    ATTR_VIA_DEVICE,
-    CONF_ENTITY_PICTURE_TEMPLATE,
-    CONF_ICON_TEMPLATE,
-    CONF_MODEL,
-    CONF_NAME,
-    STATE_UNKNOWN,
-    STATE_UNAVAILABLE,
-    SERVICE_TURN_ON,
-    SERVICE_TURN_OFF,
-    STATE_ON,
-    STATE_OFF
-)
-
-
-DEFAULT_NAME = 'humidifier'
-CONF_HUMIDITY_MIN = 'min_humidity'
-CONF_HUMIDITY_MAX = 'max_humidity'
-CONF_MODE_LIST = 'modes'
-CONF_STATE_TEMPLATE = 'state_template'
-CONF_CURRENT_HUMIDITY_TEMPLATE = 'current_humidity_template'
-CONF_TARGET_HUMIDITY_TEMPLATE = 'target_humidity_template'
-CONF_ACTION_TEMPLATE = 'action_template'
-CONF_MODE_TEMPLATE = 'mode_template'
-CONF_MODE_LIST_TEMPLATE = 'mode_list_template'
-CONF_SWITCH_ID = 'switch_id'
-CONF_SET_STATE_ACTION = 'set_state_action'
-CONF_SET_MODE_ACTION = 'set_mode_action'
-CONF_SET_TARGET_HUMIDITY_ACTION = 'set_target_humidity_action'
-CONF_TYPE = 'type'
-CONF_CONFIGURATION_URL = 'configuration_url'
-CONF_CONNECTIONS = 'connections'
-CONF_IDENTIFIERS = 'identifiers'
-CONF_HW_VERSION = 'hw_version'
-CONF_MANUFACTURER = 'manufacturer'
-CONF_SERIAL_NUMBER = 'serial_number'
-CONF_SUGGESTED_AREA = 'suggested_area'
-CONF_SW_VERSION = 'sw_version'
-CONF_VIA_DEVICE = 'via_device'
-CONF_DEVICE = 'device'
-
-DEHUMIDIFIER_TYPE = 'dehumidifier'
-HUMIDIFIER_TYPE = 'humidifier'
-
-TYPES = [
-  DEHUMIDIFIER_TYPE,
-  HUMIDIFIER_TYPE
-]
-
-DEFAULT_TYPE = DEHUMIDIFIER_TYPE
-DEFAULT_HUMIDITY = 50
-DEFAULT_SWITCH_STATE = STATE_OFF
-MIN_HUMIDITY = 40
-MAX_HUMIDITY = 80
-
-DOMAIN = "humidifier_template"
+from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.template import Template
 
 _LOGGER = logging.getLogger(__name__)
 
+CONF_MIN_HUMIDITY = "min_humidity"
+CONF_MAX_HUMIDITY = "max_humidity"
+CONF_TARGET_HUMIDITY_TEMPLATE = "target_humidity_template"
+CONF_CURRENT_HUMIDITY_TEMPLATE = "current_humidity_template"
+CONF_STATE_TEMPLATE = "state_template"
+CONF_MODE_TEMPLATE = "mode_template"
+CONF_ACTION_TEMPLATE = "action_template"
+CONF_MODES = "modes"
+CONF_SET_TARGET_HUMIDITY_ACTION = "set_target_humidity_action"
+CONF_SET_MODE_ACTION = "set_mode_action"
+# NEW: turn_on and turn_off actions
+CONF_TURN_ON_ACTION = "turn_on_action"
+CONF_TURN_OFF_ACTION = "turn_off_action"
 
-def validate_device_has_at_least_one_identifier(value: ConfigType) -> ConfigType:
-    """Validate that a device info entry has at least one identifying value."""
-    if value.get(CONF_IDENTIFIERS) or value.get(CONF_CONNECTIONS):
-        return value
-    raise vol.Invalid(
-        "Device must have at least one identifying value in "
-        "'identifiers' and/or 'connections'"
-    )
+DEFAULT_NAME = "Template Humidifier"
+DEFAULT_MIN_HUMIDITY = 40
+DEFAULT_MAX_HUMIDITY = 70
+# Official HA humidifier modes (const.py):
+# normal, eco, away, boost, comfort, home, sleep, auto, baby
+DEFAULT_MODES = ["normal", "eco", "away", "boost", "comfort", "home", "sleep", "auto", "baby"]
 
-HUMIDIFIER_ENTITY_DEVICE_INFO_SCHEMA = vol.All(
-    vol.Schema(
-        {
-            vol.Optional(CONF_IDENTIFIERS, default=list): vol.All(
-                cv.ensure_list, [cv.string]
-            ),
-            vol.Optional(CONF_CONNECTIONS, default=list): vol.All(
-                cv.ensure_list, [vol.All(vol.Length(2), [cv.string])]
-            ),
-            vol.Optional(CONF_MANUFACTURER): cv.string,
-            vol.Optional(CONF_MODEL): cv.string,
-            vol.Optional(CONF_NAME): cv.string,
-            vol.Optional(CONF_HW_VERSION): cv.string,
-            vol.Optional(CONF_SERIAL_NUMBER): cv.string,
-            vol.Optional(CONF_SW_VERSION): cv.string,
-            vol.Optional(CONF_VIA_DEVICE): cv.string,
-            vol.Optional(CONF_SUGGESTED_AREA): cv.string,
-            vol.Optional(CONF_CONFIGURATION_URL): cv.configuration_url,
-        }
-    ),
-    validate_device_has_at_least_one_identifier,
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {
+        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        vol.Optional(CONF_UNIQUE_ID): cv.string,
+        vol.Optional(CONF_MIN_HUMIDITY, default=DEFAULT_MIN_HUMIDITY): vol.Coerce(float),
+        vol.Optional(CONF_MAX_HUMIDITY, default=DEFAULT_MAX_HUMIDITY): vol.Coerce(float),
+        vol.Optional(CONF_TARGET_HUMIDITY_TEMPLATE): cv.template,
+        vol.Optional(CONF_CURRENT_HUMIDITY_TEMPLATE): cv.template,
+        vol.Optional(CONF_STATE_TEMPLATE): cv.template,
+        vol.Optional(CONF_MODE_TEMPLATE): cv.template,
+        vol.Optional(CONF_ACTION_TEMPLATE): cv.template,
+        vol.Optional(CONF_MODES, default=DEFAULT_MODES): cv.ensure_list,
+        vol.Optional(CONF_SET_TARGET_HUMIDITY_ACTION): cv.SCRIPT_SCHEMA,
+        vol.Optional(CONF_SET_MODE_ACTION): cv.SCRIPT_SCHEMA,
+        # NEW: turn_on and turn_off actions
+        vol.Optional(CONF_TURN_ON_ACTION): cv.SCRIPT_SCHEMA,
+        vol.Optional(CONF_TURN_OFF_ACTION): cv.SCRIPT_SCHEMA,
+    }
 )
 
-PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA.extend(
-  {
-    vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-    vol.Optional(CONF_SWITCH_ID): cv.string,
-    vol.Optional(CONF_HUMIDITY_MIN, default=MIN_HUMIDITY): vol.Coerce(int),
-    vol.Optional(CONF_HUMIDITY_MAX, default=MAX_HUMIDITY): vol.Coerce(int),
-    vol.Optional(CONF_STATE_TEMPLATE): cv.template,
-    vol.Optional(CONF_CURRENT_HUMIDITY_TEMPLATE): cv.template,
-    vol.Optional(CONF_TARGET_HUMIDITY_TEMPLATE): cv.template,
-    vol.Optional(CONF_ACTION_TEMPLATE): cv.template,
-    vol.Optional(CONF_MODE_TEMPLATE): cv.template,
-    vol.Optional(CONF_MODE_LIST_TEMPLATE): cv.template,
-    vol.Optional(CONF_TYPE, default=DEFAULT_TYPE): vol.All(cv.string, vol.In(TYPES)),
-    vol.Optional(
-        CONF_MODE_LIST,
-        default=[
-            MODE_AUTO,
-            MODE_AWAY,
-            MODE_NORMAL
-        ],
-    ): cv.ensure_list,
-    vol.Optional(CONF_SET_STATE_ACTION): cv.SCRIPT_SCHEMA,
-    vol.Optional(CONF_SET_MODE_ACTION): cv.SCRIPT_SCHEMA,
-    vol.Optional(CONF_SET_TARGET_HUMIDITY_ACTION): cv.SCRIPT_SCHEMA,
-    vol.Optional(CONF_DEVICE): HUMIDIFIER_ENTITY_DEVICE_INFO_SCHEMA,
-  }
-)
 
 async def async_setup_platform(
     hass: HomeAssistant,
     config: ConfigType,
     async_add_entities: AddEntitiesCallback,
     discovery_info: DiscoveryInfoType | None = None,
-):
-  """Set up the humidifier platform."""
-
-  await async_setup_reload_service(hass, DOMAIN, [HUMIDIFIER_DOMAIN])
-  await async_setup_template_platform(
-      hass,
-      HUMIDIFIER_DOMAIN,
-      config,
-      TemplateHumidifier,
-      None,
-      async_add_entities,
-      discovery_info,
-      {},
-  )
+) -> None:
+    """Set up the Template Humidifier platform."""
+    async_add_entities([TemplateHumidifier(hass, config)])
 
 
-def device_info_from_specifications(
-    specifications: dict[str, Any] | None,
-) -> DeviceInfo | None:
-    """Return a device description for device registry."""
-    if not specifications:
-        return None
+class TemplateHumidifier(HumidifierEntity):
+    """Representation of a Template Humidifier."""
 
-    info = DeviceInfo(
-        identifiers={(DOMAIN, id_) for id_ in specifications[CONF_IDENTIFIERS]},
-        connections={
-            (conn_[0], conn_[1]) for conn_ in specifications[CONF_CONNECTIONS]
-        },
-    )
+    _attr_should_poll = False
 
-    if CONF_MANUFACTURER in specifications:
-        info[ATTR_MANUFACTURER] = specifications[CONF_MANUFACTURER]
-
-    if CONF_MODEL in specifications:
-        info[ATTR_MODEL] = specifications[CONF_MODEL]
-
-    if CONF_NAME in specifications:
-        info[ATTR_NAME] = specifications[CONF_NAME]
-
-    if CONF_HW_VERSION in specifications:
-        info[ATTR_HW_VERSION] = specifications[CONF_HW_VERSION]
-
-    if CONF_SERIAL_NUMBER in specifications:
-        info[ATTR_SERIAL_NUMBER] = specifications[CONF_SERIAL_NUMBER]
-
-    if CONF_SW_VERSION in specifications:
-        info[ATTR_SW_VERSION] = specifications[CONF_SW_VERSION]
-
-    if CONF_VIA_DEVICE in specifications:
-        info[ATTR_VIA_DEVICE] = (DOMAIN, specifications[CONF_VIA_DEVICE])
-
-    if CONF_SUGGESTED_AREA in specifications:
-        info[ATTR_SUGGESTED_AREA] = specifications[CONF_SUGGESTED_AREA]
-
-    if CONF_CONFIGURATION_URL in specifications:
-        info[ATTR_CONFIGURATION_URL] = specifications[CONF_CONFIGURATION_URL]
-
-    return info
-
-
-class TemplateHumidifier(TemplateEntity, HumidifierEntity, RestoreEntity):
-
-    def __init__(self, hass: HomeAssistant, config: ConfigType, unique_id: str | None):
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        config: dict,
+    ) -> None:
         """Initialize the humidifier."""
-
-        config_name = config[CONF_NAME]
-        config[CONF_NAME] = None
-        super().__init__(
-            hass,
-            config=config,
-            unique_id=config.get(
-                CONF_UNIQUE_ID,
-                f"template_humidifier_{config_name.lower().replace(" ", "_")}"
-            )
-        )
         self.hass = hass
-        self._config = config
-        self._attr_unique_id = config.get(
-            CONF_UNIQUE_ID,
-            f"template_humidifier_{config[CONF_NAME].lower().replace(" ", "_")}"
-        )
-        self._attr_name = config_name
-        self._attr_min_humidity = config.get(CONF_HUMIDITY_MIN, MIN_HUMIDITY)
-        self._attr_max_humidity = config.get(CONF_HUMIDITY_MAX, MAX_HUMIDITY)
-        self._state_template = config.get(CONF_STATE_TEMPLATE, None)
-        self._current_humidity_template = config.get(CONF_CURRENT_HUMIDITY_TEMPLATE, None)
-        self._target_humidity_template = config.get(CONF_TARGET_HUMIDITY_TEMPLATE, None)
-        self._action_template = config.get(CONF_ACTION_TEMPLATE, None)
-        self._mode_template = config.get(CONF_MODE_TEMPLATE, None)
-        self._mode_list_template = config.get(CONF_MODE_LIST_TEMPLATE, None)
-        self._switch_id = config.get(CONF_SWITCH_ID, None)
-        self._set_state_action = config.get(CONF_SET_STATE_ACTION, None)
-        if self._switch_id and self._set_state_action:
-            raise ValueError(f"Cannot define both {CONF_SWITCH_ID} and {CONF_SET_STATE_ACTION}")
-        self._set_mode_action = config.get(CONF_SET_MODE_ACTION, None)
-        self._set_target_humidity_action = config.get(CONF_SET_TARGET_HUMIDITY_ACTION, None)
-
-        self._current_humidity = DEFAULT_HUMIDITY
-
-        self._state = DEFAULT_SWITCH_STATE == STATE_ON
-        self._attr_device_class = HumidifierDeviceClass.DEHUMIDIFIER
-        if config.get(CONF_TYPE) == HUMIDIFIER_TYPE:
-            self._attr_device_class = HumidifierDeviceClass.HUMIDIFIER
-
-        # To check if the switch state change if fired by the platform
-        self._self_changed_switch = False
-
-        self._target_humidity = DEFAULT_HUMIDITY
-        if config.get(CONF_MODE_LIST):
-            self._attr_supported_features = HumidifierEntityFeature.MODES
-            self._attr_available_modes = config[CONF_MODE_LIST]
-            self._attr_mode = MODE_NORMAL
-        if config.get(CONF_DEVICE):
-            self._attr_device_info = device_info_from_specifications(config.get(CONF_DEVICE))
-
-        self._available = True
-
-        # set script variables
-        self._set_state_script = None
-        set_state_action = config.get(CONF_SET_STATE_ACTION)
-        if set_state_action:
-            self._set_state_script = Script(
-                hass, set_state_action, self._attr_name, DOMAIN
-            )
-
-        self._set_mode_script = None
-        set_mode_action = config.get(CONF_SET_MODE_ACTION)
-        if set_mode_action:
-            self._set_mode_script = Script(
-                hass, set_mode_action, self._attr_name, DOMAIN
-            )
-
+        self._attr_name = config.get(CONF_NAME)
+        self._attr_unique_id = config.get(CONF_UNIQUE_ID)
+        self._attr_min_humidity = config.get(CONF_MIN_HUMIDITY)
+        self._attr_max_humidity = config.get(CONF_MAX_HUMIDITY)
+        self._attr_available_modes = config.get(CONF_MODES)
+        
+        self._target_humidity_template = config.get(CONF_TARGET_HUMIDITY_TEMPLATE)
+        self._current_humidity_template = config.get(CONF_CURRENT_HUMIDITY_TEMPLATE)
+        self._state_template = config.get(CONF_STATE_TEMPLATE)
+        self._mode_template = config.get(CONF_MODE_TEMPLATE)
+        self._action_template = config.get(CONF_ACTION_TEMPLATE)
+        
         self._set_target_humidity_script = None
-        set_target_humidity_action = config.get(CONF_SET_TARGET_HUMIDITY_ACTION)
-        if set_target_humidity_action:
+        if CONF_SET_TARGET_HUMIDITY_ACTION in config:
             self._set_target_humidity_script = Script(
-                hass, set_target_humidity_action, self._attr_name, DOMAIN
+                hass, config[CONF_SET_TARGET_HUMIDITY_ACTION], self._attr_name, HUMIDIFIER_DOMAIN
+            )
+            
+        self._set_mode_script = None
+        if CONF_SET_MODE_ACTION in config:
+            self._set_mode_script = Script(
+                hass, config[CONF_SET_MODE_ACTION], self._attr_name, HUMIDIFIER_DOMAIN
+            )
+        
+        # NEW: turn_on and turn_off scripts
+        self._turn_on_script = None
+        if CONF_TURN_ON_ACTION in config:
+            self._turn_on_script = Script(
+                hass, config[CONF_TURN_ON_ACTION], self._attr_name, HUMIDIFIER_DOMAIN
+            )
+            
+        self._turn_off_script = None
+        if CONF_TURN_OFF_ACTION in config:
+            self._turn_off_script = Script(
+                hass, config[CONF_TURN_OFF_ACTION], self._attr_name, HUMIDIFIER_DOMAIN
             )
 
-    async def async_added_to_hass(self):
+        self._attr_target_humidity = None
+        self._attr_current_humidity = None
+        self._attr_mode = None
+        self._attr_action = None
+        self._state = False
+
+        # Set supported features
+        self._attr_supported_features = HumidifierEntityFeature(0)
+        if self._attr_available_modes:
+            self._attr_supported_features |= HumidifierEntityFeature.MODES
+
+        self._attr_device_class = HumidifierDeviceClass.HUMIDIFIER
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if entity is on."""
+        return self._state
+
+    async def async_added_to_hass(self) -> None:
         """Run when entity about to be added."""
         await super().async_added_to_hass()
 
-        # Check If we have an old state
-        previous_state = await self.async_get_last_state()
-        if previous_state is not None:
-            self._state = previous_state.state
+        # Render templates
+        if self._target_humidity_template:
+            self._target_humidity_template.hass = self.hass
+        if self._current_humidity_template:
+            self._current_humidity_template.hass = self.hass
+        if self._state_template:
+            self._state_template.hass = self.hass
+        if self._mode_template:
+            self._mode_template.hass = self.hass
+        if self._action_template:
+            self._action_template.hass = self.hass
 
-            if mode := previous_state.attributes.get(
-                ATTR_MODE, MODE_NORMAL
-            ):
-                self._attr_mode = mode
+        @callback
+        def _async_update_state(*_):
+            """Update entity state."""
+            self._update_state()
+            self.async_write_ha_state()
 
-            if humidity := previous_state.attributes.get(
-                ATTR_HUMIDITY, DEFAULT_HUMIDITY
-            ):
-                self._target_temp = humidity
+        # Track state changes for all referenced entities
+        self.async_on_remove(
+            async_track_state_change_event(
+                self.hass,
+                self._get_template_entities(),
+                _async_update_state,
+            )
+        )
 
-            if current_temperature := previous_state.attributes.get(
-                ATTR_CURRENT_HUMIDITY
-            ):
-                self._current_temp = current_temperature
+        # Initial update
+        self._update_state()
 
-            if humidity := previous_state.attributes.get(
-                ATTR_CURRENT_HUMIDITY
-            ):
-                self._current_humidity = humidity
+    def _get_template_entities(self) -> list[str]:
+        """Get all entities referenced in templates."""
+        entities = set()
+        for template in [
+            self._target_humidity_template,
+            self._current_humidity_template,
+            self._state_template,
+            self._mode_template,
+            self._action_template,
+        ]:
+            if template:
+                try:
+                    info = template.async_render_to_info()
+                    entities.update(info.entities)
+                except TemplateError:
+                    pass
+        return list(entities)
 
     @callback
-    def _async_setup_templates(self) -> None:
-        """Set up templates."""
-        if self._state_template:
-            self.add_template_attribute(
-                "_state",
-                self._state_template,
-                None,
-                self._update_state,
-                none_on_template_error=True,
-            )
+    def _update_state(self) -> None:
+        """Update entity state from templates."""
+        try:
+            if self._state_template:
+                result = self._state_template.async_render()
+                if result in (True, "True", "true", "on", "On", "ON", STATE_ON, 1, "1"):
+                    self._state = True
+                elif result in (False, "False", "false", "off", "Off", "OFF", STATE_OFF, 0, "0"):
+                    self._state = False
+                else:
+                    self._state = bool(result)
+        except TemplateError as ex:
+            _LOGGER.error("Error rendering state template: %s", ex)
 
-        if self._mode_template:
-            self.add_template_attribute(
-                "_mode",
-                self._mode_template,
-                None,
-                self._update_mode,
-                none_on_template_error=True,
-            )
+        try:
+            if self._target_humidity_template:
+                self._attr_target_humidity = float(
+                    self._target_humidity_template.async_render()
+                )
+        except (TemplateError, ValueError) as ex:
+            _LOGGER.error("Error rendering target humidity template: %s", ex)
 
-        if self._mode_list_template:
-            self.add_template_attribute(
-                "_mode_list",
-                self._mode_list_template,
-                None,
-                self._update_mode_list,
-                none_on_template_error=True,
-            )
+        try:
+            if self._current_humidity_template:
+                self._attr_current_humidity = float(
+                    self._current_humidity_template.async_render()
+                )
+        except (TemplateError, ValueError) as ex:
+            _LOGGER.error("Error rendering current humidity template: %s", ex)
 
-        if self._current_humidity_template:
-            self.add_template_attribute(
-                "_current_humidity",
-                self._current_humidity_template,
-                None,
-                self._update_current_humidity,
-                none_on_template_error=True,
-            )
+        try:
+            if self._mode_template:
+                self._attr_mode = str(self._mode_template.async_render()).strip()
+        except TemplateError as ex:
+            _LOGGER.error("Error rendering mode template: %s", ex)
 
-        if self._target_humidity_template:
-            self.add_template_attribute(
-                "_target_humidity",
-                self._target_humidity_template,
-                None,
-                self._update_target_humidity,
-                none_on_template_error=True,
-            )
-
-        if self._action_template:
-            self.add_template_attribute(
-                "_action",
-                self._action_template,
-                None,
-                self._update_action,
-                none_on_template_error=True,
-            )
-
-    @property
-    def current_humidity(self) -> int | None:
-        """Return the current humidity."""
-        return self._current_humidity
-
-    @property
-    def target_humidity(self) -> int | None:
-        """Return the target humidity."""
-        return self._target_humidity
-
-    @property
-    def is_on(self):
-        """Return if the humidifier is on."""
-        return self._state
+        try:
+            if self._action_template:
+                self._attr_action = str(self._action_template.async_render())
+        except TemplateError as ex:
+            _LOGGER.error("Error rendering action template: %s", ex)
 
     async def async_set_humidity(self, humidity: int) -> None:
-        """Set target humidity."""
-        self._target_humidity = humidity
-
-        if self._set_target_humidity_script is not None:
+        """Set new target humidity."""
+        if self._set_target_humidity_script:
             await self._set_target_humidity_script.async_run(
-                run_variables={ATTR_HUMIDITY: humidity}, context=self._context
+                {"humidity": humidity}, context=self._context
             )
+        else:
+            self._attr_target_humidity = humidity
+            self.async_write_ha_state()
 
     async def async_set_mode(self, mode: str) -> None:
         """Set new mode."""
-        if self._mode_template is None:
-            self._attr_mode = mode # always optimistic
+        if self._set_mode_script:
+            await self._set_mode_script.async_run(
+                {"mode": mode}, context=self._context
+            )
+        else:
+            self._attr_mode = mode
             self.async_write_ha_state()
 
-        if self._set_mode_script is not None:
-            await self._set_mode_script.async_run(
-                run_variables={ATTR_MODE: mode}, context=self._context
-            )
+    # NEW: async_turn_on method
+    async def async_turn_on(self, **kwargs) -> None:
+        """Turn the humidifier on."""
+        if self._turn_on_script:
+            await self._turn_on_script.async_run(context=self._context)
+        else:
+            # Fallback: set state optimistically
+            self._state = True
+            self.async_write_ha_state()
 
-    async def async_turn_on(self) -> None:
-        """Turn the device on."""
-        self._state = True
-
-        if self._switch_id is not None:
-            if "fan" in self._switch_id:
-                await self.hass.services.async_call(
-                    FAN_DOMAIN,
-                    SERVICE_TURN_ON,
-                    {"entity_id": self._switch_id}
-                )
-            elif "humidifier" in self._switch_id:
-                await self.hass.services.async_call(
-                    HUMIDIFIER_DOMAIN,
-                    SERVICE_TURN_ON,
-                    {"entity_id": self._switch_id}
-                )
-            else:
-                await self.hass.services.async_call(
-                    SWITCH_DOMAIN,
-                    SERVICE_TURN_ON,
-                    {"entity_id": self._switch_id}
-                )
-        elif self._set_state_script is not None:
-            await self._set_state_script.async_run(
-                run_variables={"state": "on"}, context=self._context
-            )
-
-    async def async_turn_off(self) -> None:
-        """Turn the device off."""
-        self._state = False
-
-        if self._switch_id is not None:
-            if "fan" in self._switch_id:
-                await self.hass.services.async_call(
-                    FAN_DOMAIN,
-                    SERVICE_TURN_OFF,
-                    {"entity_id": self._switch_id}
-                )
-            elif "humidifier" in self._switch_id:
-                await self.hass.services.async_call(
-                    HUMIDIFIER_DOMAIN,
-                    SERVICE_TURN_OFF,
-                    {"entity_id": self._switch_id}
-                )
-            else:
-                await self.hass.services.async_call(
-                    SWITCH_DOMAIN,
-                    SERVICE_TURN_OFF,
-                    {"entity_id": self._switch_id}
-                )
-        elif self._set_state_script is not None:
-            await self._set_state_script.async_run(
-                run_variables={"state": "off"}, context=self._context
-            )
-
-    @callback
-    def _update_state(self, state):
-        self._state = False
-        if state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-            try:
-                if isinstance(state, TemplateError):
-                    self._state = None
-                    return
-
-                if isinstance(state, bool):
-                    self._state = state
-                    return
-
-                if isinstance(state, str):
-                    self._state = state.lower() in ("true", STATE_ON)
-                    return
-
-            except ValueError:
-                _LOGGER.error("Could not parse state from %s", state)
+    # NEW: async_turn_off method
+    async def async_turn_off(self, **kwargs) -> None:
+        """Turn the humidifier off."""
+        if self._turn_off_script:
+            await self._turn_off_script.async_run(context=self._context)
+        else:
+            # Fallback: set state optimistically
             self._state = False
-
-    @callback
-    def _update_mode(self, mode):
-        if mode not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-            try:
-                self._attr_mode = mode
-            except ValueError:
-                _LOGGER.error("Could not parse mode from %s", mode)
-
-    @callback
-    def _update_mode_list(self, mode_list):
-        if mode_list not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-            try:
-                self._attr_supported_features = HumidifierEntityFeature.MODES
-                self._attr_available_modes = mode_list
-                self._attr_mode = mode_list[0]
-            except ValueError:
-                _LOGGER.error("Could not parse mode from %s", mode_list)
-
-    @callback
-    def _update_current_humidity(self, humidity):
-        if humidity not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-            try:
-                self._current_humidity = int(humidity)
-            except ValueError:
-                _LOGGER.error("Could not parse humidity from %s", humidity)
-
-    @callback
-    def _update_target_humidity(self, humidity):
-        if humidity not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-            try:
-                self._target_humidity = int(humidity)
-            except ValueError:
-                _LOGGER.error("Could not parse humidity from %s", humidity)
-
-    @callback
-    def _update_action(self, action):
-        if action not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-            try:
-                if not self._state:
-                    self._attr_action = HumidifierAction.OFF
-                else:
-                    self._attr_action = HumidifierAction.HUMIDIFYING
-                    if self._config.get(CONF_TYPE, HUMIDIFIER_TYPE) == DEHUMIDIFIER_TYPE:
-                        self._attr_action = HumidifierAction.DRYING
-                    if action == "fan":
-                        self._attr_action = HumidifierAction.IDLE
-            except ValueError:
-                _LOGGER.error("Could not parse action from %s", action)
-
+            self.async_write_ha_state()
